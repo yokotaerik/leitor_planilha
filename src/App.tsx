@@ -7,15 +7,33 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
-  ResponsiveContainer
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Legend
 } from 'recharts';
 import { 
   UploadCloud, 
   Search,
   ArrowUpDown,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Settings2,
+  Check
 } from 'lucide-react';
+import {
+  useReactTable,
+  getCoreRowModel,
+  getSortedRowModel,
+  getFilteredRowModel,
+  flexRender,
+} from '@tanstack/react-table';
+import type {
+  ColumnDef,
+  SortingState,
+  VisibilityState,
+} from '@tanstack/react-table';
 
 interface RowData {
   'Código'?: string;
@@ -29,11 +47,18 @@ interface RowData {
   abcCategory?: 'A' | 'B' | 'C';
 }
 
+const COLORS = ['#000000', '#333333', '#666666', '#999999', '#CCCCCC', '#E5E5E5', '#F5F5F5'];
+
+const formatCurrency = (val: number) => 
+  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+
 export default function App() {
   const [data, setData] = useState<RowData[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [globalFilter, setGlobalFilter] = useState('');
   const [showCharts, setShowCharts] = useState(false);
-  const [sortConfig, setSortConfig] = useState<{ key: keyof RowData; direction: 'asc' | 'desc' } | null>(null);
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -74,39 +99,115 @@ export default function App() {
     reader.readAsBinaryString(file);
   };
 
-  const filtered = useMemo(() => {
-    return data.filter(item => {
-      const mat = String(item['Material'] || '').toLowerCase();
-      const cod = String(item['Código'] || '').toLowerCase();
-      return mat.includes(searchTerm.toLowerCase()) || cod.includes(searchTerm.toLowerCase());
-    }).sort((a, b) => {
-      if (!sortConfig) return 0;
-      const av = a[sortConfig.key] ?? '';
-      const bv = b[sortConfig.key] ?? '';
-      return sortConfig.direction === 'asc' ? (av < bv ? -1 : 1) : (av > bv ? -1 : 1);
-    });
-  }, [data, searchTerm, sortConfig]);
+  const columns = useMemo<ColumnDef<RowData>[]>(() => [
+    {
+      accessorKey: 'abcCategory',
+      header: 'ABC',
+      cell: info => <span className="font-bold">{String(info.getValue())}</span>
+    },
+    {
+      accessorKey: 'Código',
+      header: 'Código',
+    },
+    {
+      accessorKey: 'Material',
+      header: 'Material',
+      cell: info => (
+        <div>
+          <p className="font-bold uppercase leading-tight">{String(info.getValue())}</p>
+          <p className="text-[9px] opacity-40">{info.row.original['Código']}</p>
+        </div>
+      )
+    },
+    {
+      accessorKey: 'Quantidade Física',
+      header: 'Físico',
+      cell: info => (
+        <span className="tabular-nums">
+          {Number(info.getValue() || 0).toLocaleString()} {info.row.original['Unidade']}
+        </span>
+      ),
+      meta: { align: 'right' }
+    },
+    {
+      accessorKey: 'Quantidade Disponível',
+      header: 'Disponível',
+      cell: info => {
+        const val = Number(info.getValue() || 0);
+        return (
+          <span className={`tabular-nums font-bold ${val < 0 ? 'text-red-600' : ''}`}>
+            {val.toLocaleString()}
+          </span>
+        );
+      },
+      meta: { align: 'right' }
+    },
+    {
+      accessorKey: 'Unidade',
+      header: 'UN',
+    },
+    {
+      accessorKey: 'Valor Venda Unitário',
+      header: 'Venda Unit.',
+      cell: info => formatCurrency(Number(info.getValue() || 0)),
+      meta: { align: 'right' }
+    },
+    {
+      accessorKey: 'Valor Venda Estoque',
+      header: 'Venda Total',
+      cell: info => <span className="font-bold">{formatCurrency(Number(info.getValue() || 0))}</span>,
+      meta: { align: 'right' }
+    },
+    {
+      accessorKey: 'Cobertura (Dias)',
+      header: 'Cobertura',
+      cell: info => `${info.getValue() || 0}d`,
+      meta: { align: 'right' }
+    }
+  ], []);
+
+  const table = useReactTable({
+    data,
+    columns,
+    state: {
+      sorting,
+      globalFilter,
+      columnVisibility,
+    },
+    onSortingChange: setSorting,
+    onGlobalFilterChange: setGlobalFilter,
+    onColumnVisibilityChange: setColumnVisibility,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+  });
 
   const biTotals = useMemo(() => {
+    const rows = table.getFilteredRowModel().rows;
     const unitGroups: Record<string, number> = {};
     let totalVenda = 0;
-    filtered.forEach(item => {
+    rows.forEach(({ original: item }) => {
       totalVenda += Number(item['Valor Venda Estoque']) || 0;
       const unit = String(item['Unidade'] || 'UN').toUpperCase();
       unitGroups[unit] = (unitGroups[unit] || 0) + (Number(item['Quantidade Física']) || 0);
     });
     return { totalVenda, unitSummary: Object.entries(unitGroups) };
-  }, [filtered]);
+  }, [table.getFilteredRowModel().rows]);
 
-  const categoryData = useMemo(() => {
-    const groups: Record<string, number> = {};
-    filtered.forEach(item => {
+  const categorySummary = useMemo(() => {
+    const rows = table.getFilteredRowModel().rows;
+    const groups: Record<string, { price: number; quantity: number }> = {};
+    rows.forEach(({ original: item }) => {
       const mat = String(item['Material'] || '').toUpperCase();
       const cat = ['BALDE', 'CINTA', 'TAMPA', 'PAPEL', 'BOBINA', 'SACO', 'CAIXA'].find(k => mat.includes(k)) || 'OUTROS';
-      groups[cat] = (groups[cat] || 0) + (Number(item['Valor Venda Estoque']) || 0);
+      if (!groups[cat]) groups[cat] = { price: 0, quantity: 0 };
+      groups[cat].price += (Number(item['Valor Venda Estoque']) || 0);
+      groups[cat].quantity += (Number(item['Quantidade Física']) || 0);
     });
-    return Object.entries(groups).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
-  }, [filtered]);
+    return Object.entries(groups)
+      .map(([name, vals]) => ({ name, price: vals.price, quantity: vals.quantity }))
+      .sort((a, b) => b.price - a.price);
+  }, [table.getFilteredRowModel().rows]);
 
   return (
     <div className="min-h-screen bg-white text-black font-sans p-4 md:p-10">
@@ -128,7 +229,7 @@ export default function App() {
             <div>
               <p className="text-[10px] font-bold uppercase mb-2">Soma Faturamento (Filtro)</p>
               <p className="text-4xl font-light">
-                {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(biTotals.totalVenda)}
+                {formatCurrency(biTotals.totalVenda)}
               </p>
             </div>
             <div>
@@ -144,16 +245,48 @@ export default function App() {
             </div>
           </div>
 
-          {/* Filter */}
-          <div className="relative border-b border-black">
-            <Search className="absolute left-0 top-1/2 -translate-y-1/2 w-4 h-4 opacity-30" />
-            <input 
-              type="text" 
-              placeholder="PESQUISAR PRODUTO..."
-              className="w-full pl-8 py-4 text-sm font-bold outline-none uppercase placeholder:opacity-20"
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-            />
+          {/* Filter & Column Picker */}
+          <div className="flex flex-col md:flex-row gap-4 items-center border-b border-black">
+            <div className="relative flex-1 w-full">
+              <Search className="absolute left-0 top-1/2 -translate-y-1/2 w-4 h-4 opacity-30" />
+              <input 
+                type="text" 
+                placeholder="PESQUISAR PRODUTO..."
+                className="w-full pl-8 py-4 text-sm font-bold outline-none uppercase placeholder:opacity-20"
+                value={globalFilter ?? ''}
+                onChange={e => setGlobalFilter(e.target.value)}
+              />
+            </div>
+            <div className="relative">
+              <button 
+                onClick={() => setShowColumnPicker(!showColumnPicker)}
+                className="flex items-center gap-2 px-4 py-4 text-[10px] font-bold uppercase hover:bg-gray-100 transition-all border-l border-black"
+              >
+                <Settings2 className="w-4 h-4" />
+                Colunas
+              </button>
+              {showColumnPicker && (
+                <div className="absolute right-0 top-full z-10 w-48 bg-white border border-black shadow-xl p-2 mt-1">
+                  <p className="text-[9px] font-bold uppercase mb-2 px-2 opacity-50">Exibir/Ocultar</p>
+                  <div className="space-y-1">
+                    {table.getAllLeafColumns().map(column => (
+                      <label key={column.id} className="flex items-center gap-2 px-2 py-1.5 text-[10px] font-bold uppercase cursor-pointer hover:bg-gray-50">
+                        <div className={`w-3 h-3 border border-black flex items-center justify-center ${column.getIsVisible() ? 'bg-black' : ''}`}>
+                          {column.getIsVisible() && <Check className="w-2.5 h-2.5 text-white" />}
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={column.getIsVisible()}
+                          onChange={column.getToggleVisibilityHandler()}
+                          className="hidden"
+                        />
+                        {String(column.columnDef.header)}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Expandable Charts */}
@@ -162,20 +295,66 @@ export default function App() {
               onClick={() => setShowCharts(!showCharts)}
               className="w-full p-4 flex justify-between items-center text-[10px] font-bold uppercase hover:bg-black hover:text-white transition-all"
             >
-              Gráficos de Categoria
+              Análise de Categorias
               {showCharts ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
             {showCharts && (
-              <div className="p-6 h-80 w-full border-t border-black">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={categoryData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
-                    <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 'bold' }} />
-                    <YAxis tick={{ fontSize: 9 }} />
-                    <Tooltip cursor={{fill: '#f5f5f5'}} />
-                    <Bar dataKey="value" fill="#000" />
-                  </BarChart>
-                </ResponsiveContainer>
+              <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-10 border-t border-black">
+                {/* Bar Chart - Price */}
+                <div className="space-y-4">
+                  <p className="text-[10px] font-bold uppercase text-center">Faturamento por Categoria (BRL)</p>
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={categorySummary}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 'bold' }} />
+                        <YAxis 
+                          tick={{ fontSize: 9 }} 
+                          tickFormatter={(val) => `R$${(val/1000).toFixed(0)}k`}
+                        />
+                        <Tooltip 
+                          cursor={{fill: '#f5f5f5'}} 
+                          formatter={(val: number | string | (number | string)[] | undefined) => [formatCurrency(Number(val) || 0), 'Valor']}
+                          labelStyle={{ fontSize: 10, fontWeight: 'bold' }}
+                          contentStyle={{ fontSize: 10 }}
+                        />
+                        <Bar dataKey="price" fill="#000" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Pie Chart - Quantity */}
+                <div className="space-y-4">
+                  <p className="text-[10px] font-bold uppercase text-center">Distribuição de Quantidade</p>
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={categorySummary}
+                          dataKey="quantity"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={80}
+                          label={({ name, percent }: { name?: string, percent?: number }) => `${name || ''} ${((percent || 0) * 100).toFixed(0)}%`}
+                          labelLine={false}
+                          fontSize={9}
+                          fontWeight="bold"
+                        >
+                          {categorySummary.map((_, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          formatter={(val: number | string | (number | string)[] | undefined) => [(Number(val) || 0).toLocaleString(), 'Quantidade']}
+                          contentStyle={{ fontSize: 10 }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 10, fontWeight: 'bold' }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -184,27 +363,41 @@ export default function App() {
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse border-t border-black">
               <thead>
-                <tr className="text-[10px] font-bold uppercase border-b border-black">
-                  <th className="py-4 px-2">ABC</th>
-                  <th className="py-4 px-2 cursor-pointer" onClick={() => setSortConfig({ key: 'Material', direction: sortConfig?.direction === 'asc' ? 'desc' : 'asc' })}>Material <ArrowUpDown className="inline w-3 h-3"/></th>
-                  <th className="py-4 px-2 text-right">Físico</th>
-                  <th className="py-4 px-2 text-right">Livre</th>
-                  <th className="py-4 px-2 text-right">Venda Total</th>
-                </tr>
+                {table.getHeaderGroups().map(headerGroup => (
+                  <tr key={headerGroup.id} className="text-[10px] font-bold uppercase border-b border-black">
+                    {headerGroup.headers.map(header => (
+                      <th 
+                        key={header.id} 
+                        className={`py-4 px-2 select-none ${header.column.getCanSort() ? 'cursor-pointer hover:bg-gray-50' : ''} ${(header.column.columnDef.meta as any)?.align === 'right' ? 'text-right' : ''}`}
+                        onClick={header.column.getToggleSortingHandler()}
+                      >
+                        <div className="flex items-center gap-1 inline-flex">
+                          {flexRender(header.column.columnDef.header, header.getContext())}
+                          {header.column.getCanSort() && (
+                            <div className="w-3 h-3">
+                              {{
+                                asc: <ChevronUp className="w-3 h-3" />,
+                                desc: <ChevronDown className="w-3 h-3" />,
+                              }[header.column.getIsSorted() as string] ?? <ArrowUpDown className="w-3 h-3 opacity-20" />}
+                            </div>
+                          )}
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                ))}
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filtered.map((item, i) => (
-                  <tr key={i} className="text-[11px] hover:bg-gray-50">
-                    <td className="py-4 px-2 font-bold">{item.abcCategory}</td>
-                    <td className="py-4 px-2">
-                      <p className="font-bold uppercase">{item['Material']}</p>
-                      <p className="text-[9px] opacity-40">{item['Código']}</p>
-                    </td>
-                    <td className="py-4 px-2 text-right tabular-nums">{item['Quantidade Física']} {item['Unidade']}</td>
-                    <td className={`py-4 px-2 text-right tabular-nums font-bold ${Number(item['Quantidade Disponível']) < 0 ? 'text-red-600' : ''}`}>{item['Quantidade Disponível']}</td>
-                    <td className="py-4 px-2 text-right tabular-nums font-bold">
-                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(item['Valor Venda Estoque']) || 0)}
-                    </td>
+                {table.getRowModel().rows.map(row => (
+                  <tr key={row.id} className="text-[11px] hover:bg-gray-50">
+                    {row.getVisibleCells().map(cell => (
+                      <td 
+                        key={cell.id} 
+                        className={`py-4 px-2 ${(cell.column.columnDef.meta as any)?.align === 'right' ? 'text-right' : ''}`}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
