@@ -157,12 +157,6 @@ export default function App() {
       header: 'Venda Total',
       cell: info => <span className="font-bold">{formatCurrency(Number(info.getValue() || 0))}</span>,
       meta: { align: 'right' }
-    },
-    {
-      accessorKey: 'Cobertura (Dias)',
-      header: 'Cobertura',
-      cell: info => `${info.getValue() || 0}d`,
-      meta: { align: 'right' }
     }
   ], []);
 
